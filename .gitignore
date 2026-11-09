@@ -1,0 +1,10 @@
+# Environment / secrets
+.env
+.env.local
+!.env.example
+
+# OS / editor cruft
+.DS_Store
+
+# Generated output
+output/

@@ -1,0 +1,3 @@
+github-copilot-sdk
+pyyaml
+httpx
