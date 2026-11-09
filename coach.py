@@ -65,10 +65,8 @@ OBSIDIAN_BASE_URL = os.getenv("OBSIDIAN_BASE_URL", "http://127.0.0.1:27123")
 OBSIDIAN_API_KEY = os.getenv("OBSIDIAN_API_KEY", "")
 OBSIDIAN_VAULT_FOLDER = os.getenv("OBSIDIAN_VAULT_FOLDER", "LeetCode Scenarios")
 
-OUTPUT_SCHEMA = """
-严格只输出 JSON（不要 markdown 代码块、不要任何解释文字），遵循这个 schema：
-{
-  "problem": {"title": str, "slug": str, "difficulty": str, "tags": [str]},
+_PROBLEM_SCHEMA = """{
+  "problem": {"id": str, "title": str, "slug": str, "difficulty": str, "tags": [str], "url": str},
   "pattern": str,
   "scenarios": [
     {
@@ -78,7 +76,14 @@ OUTPUT_SCHEMA = """
       "abstraction_bridge": str
     }
   ]
-}
+}"""
+
+OUTPUT_SCHEMA = f"""
+严格只输出 JSON（不要 markdown 代码块、不要任何解释文字）。
+"problem.id" 必须是 LeetCode 官方题号（questionFrontendId，如 "136"），"problem.url" 必须是可直接打开的题目链接（如 "https://leetcode.com/problems/single-number/"）。
+单道题目（按 slug 查询）时输出一个对象，遵循这个 schema：
+{_PROBLEM_SCHEMA}
+多道题目（按 tags 搜索）时输出一个 JSON 数组，数组每一项都遵循上面同样的 schema，不要再包一层外壳对象。
 """
 
 
@@ -153,14 +158,14 @@ async def run(profile_name: str, slug: str | None, tags: list[str], limit: int):
         await client.stop()
 
     text = result.get("text", "")
-    label = slug or "search"
     parsed = parse_json(text)
+    label = slug or "search"
     save_local(profile_name, label, parsed, text)
-    if parsed:
-        await save_to_obsidian(profile_name, label, parsed)
+    for entry in _as_problem_list(parsed):
+        await save_to_obsidian(profile_name, entry)
 
 
-def parse_json(text: str) -> dict | None:
+def parse_json(text: str):
     # strip accidental ```json fences before parsing
     stripped = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip())
     try:
@@ -169,7 +174,16 @@ def parse_json(text: str) -> dict | None:
         return None
 
 
-def save_local(profile_name: str, label: str, parsed: dict | None, raw_text: str):
+def _as_problem_list(parsed) -> list[dict]:
+    # search mode returns a JSON array (one entry per problem); slug mode returns a single object
+    if isinstance(parsed, list):
+        return [p for p in parsed if isinstance(p, dict)]
+    if isinstance(parsed, dict):
+        return [parsed]
+    return []
+
+
+def save_local(profile_name: str, label: str, parsed, raw_text: str):
     out_dir = OUTPUT_DIR / profile_name
     out_dir.mkdir(parents=True, exist_ok=True)
     if parsed is not None:
@@ -187,18 +201,24 @@ def save_local(profile_name: str, label: str, parsed: dict | None, raw_text: str
 def _format_scenario_md(profile_name: str, parsed: dict) -> str:
     problem = parsed.get("problem", {})
     title = problem.get("title", "")
+    pid = problem.get("id", "")
+    url = problem.get("url", "")
     tags = problem.get("tags", [])
     out = [
         "---\n",
         "type: leetcode-scenario-coach\n",
         f"profile: {profile_name}\n",
+        f"leetcode_id: {pid}\n",
         f"slug: {problem.get('slug', '')}\n",
+        f"url: {url}\n",
         f"difficulty: {problem.get('difficulty', '')}\n",
         f"tags: [{', '.join(tags)}]\n",
         f"saved_at: {date.today().isoformat()}\n",
         "---\n\n",
-        f"# {title} · {problem.get('difficulty', '')}\n\n",
+        f"# {pid}. {title} · {problem.get('difficulty', '')}\n\n",
     ]
+    if url:
+        out.append(f"[Open on LeetCode]({url})\n\n")
     if parsed.get("pattern"):
         out.append(f"**Pattern**: {parsed['pattern']}\n\n")
     out.append("## Scenarios\n\n")
@@ -218,10 +238,12 @@ def _vault_url(path: str) -> str:
     return f"{OBSIDIAN_BASE_URL}/vault/{urllib.parse.quote(path, safe='/')}"
 
 
-async def save_to_obsidian(profile_name: str, label: str, parsed: dict):
+async def save_to_obsidian(profile_name: str, entry: dict):
     if not OBSIDIAN_API_KEY:
         return
-    md = _format_scenario_md(profile_name, parsed)
+    problem = entry.get("problem", {})
+    label = problem.get("slug") or problem.get("title") or "untitled"
+    md = _format_scenario_md(profile_name, entry)
     safe_label = re.sub(r'[\\/*?:"<>|#]', "", label)[:80].strip()
     path = f"{OBSIDIAN_VAULT_FOLDER}/{profile_name}/{safe_label}.md"
     async with httpx.AsyncClient() as client:
